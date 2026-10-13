@@ -1,0 +1,54 @@
+# Push a tag like v1.2.0 to publish that version. WordPress sites running the
+# plugin pick it up through their normal plugin updates (see the updater).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches the plugin version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          header=$(sed -nE 's/^ \* Version: *([0-9.]+).*/\1/p' facilitate-enquiries.php)
+          constant=$(sed -nE "s/.*'FACILITATE_ENQUIRIES_VERSION', '([0-9.]+)'.*/\1/p" facilitate-enquiries.php)
+          stable=$(sed -nE 's/^Stable tag: *([0-9.]+).*/\1/p' readme.txt)
+          echo "tag=$tag header=$header constant=$constant stable=$stable"
+          if [ "$tag" != "$header" ] || [ "$tag" != "$constant" ] || [ "$tag" != "$stable" ]; then
+            echo "::error::Update the plugin header, FACILITATE_ENQUIRIES_VERSION and readme.txt Stable tag to $tag before tagging"
+            exit 1
+          fi
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          coverage: none
+
+      - name: Tests
+        run: php tests/run.php
+
+      - name: Build the plugin zip
+        run: |
+          mkdir -p build/facilitate-enquiries
+          cp -r facilitate-enquiries.php uninstall.php readme.txt includes build/facilitate-enquiries/
+          (cd build && zip -qr ../facilitate-enquiries.zip facilitate-enquiries)
+          unzip -l facilitate-enquiries.zip
+
+      - name: Release notes from the readme changelog
+        run: |
+          awk -v v="= ${GITHUB_REF_NAME#v} =" '$0 == v {on=1; next} on && /^= / {exit} on' readme.txt > notes.md
+          [ -s notes.md ] || echo "Facilitate Enquiries ${GITHUB_REF_NAME}" > notes.md
+          cat notes.md
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" facilitate-enquiries.zip --title "$GITHUB_REF_NAME" --notes-file notes.md
